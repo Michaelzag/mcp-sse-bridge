@@ -55,10 +55,31 @@ es.onmessage = (event) => {
     // Log received messages when debugging
     console.error(`Received message: ${event.data.substring(0, 100)}${event.data.length > 100 ? '...' : ''}`);
     process.stdout.write(event.data + '\n');
+    // Make sure data is flushed
+    process.stdout.flush?.();
   } catch (error) {
     console.error(`Error processing message: ${error.message}`);
   }
 };
+
+// Handle any other event types the server might send
+es.addEventListener('message', (event) => {
+  console.error(`Named message event received: ${event.data.substring(0, 100)}`);
+  process.stdout.write(event.data + '\n');
+  process.stdout.flush?.();
+});
+
+// Listen for other common event types
+['ready', 'update', 'notification', 'error', 'ping'].forEach(eventName => {
+  es.addEventListener(eventName, (event) => {
+    console.error(`${eventName} event received`);
+    process.stdout.write(JSON.stringify({
+      event: eventName,
+      data: event.data
+    }) + '\n');
+    process.stdout.flush?.();
+  });
+});
 
 // Handle the endpoint event to get the session ID
 es.addEventListener('endpoint', (event) => {
@@ -156,28 +177,90 @@ process.stdin.on('data', async (data) => {
     const message = data.toString().trim();
     console.error(`Sending message to ${postUrl}?session_id=${sessionId}`);
     
+    // Create an AbortController for timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+      console.error('Request timed out after 10 seconds');
+      // Send a formatted error back to Roo
+      process.stdout.write(JSON.stringify({
+        error: "timeout",
+        message: "Request timed out after 10 seconds"
+      }) + '\n');
+      process.stdout.flush?.();
+    }, 10000); // 10 second timeout
+    
     // Post the message to the server
     const response = await fetch(`${postUrl}?session_id=${sessionId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: message,
+      signal: controller.signal
     });
+    
+    // Clear the timeout
+    clearTimeout(timeoutId);
     
     if (!response.ok) {
       console.error(`HTTP error: ${response.status} ${response.statusText}`);
+      let errorMessage = `HTTP error: ${response.status} ${response.statusText}`;
+      
       if (response.status === 404) {
-        console.error('Endpoint not found. Make sure server has a /messages/ endpoint');
+        errorMessage = 'Endpoint not found. Make sure server has a /messages/ endpoint';
       } else if (response.status === 401 || response.status === 403) {
-        console.error('Authentication error. Session ID might be invalid');
+        errorMessage = 'Authentication error. Session ID might be invalid';
       }
+      
+      console.error(errorMessage);
+      
+      // Send a formatted error response back to Roo
+      process.stdout.write(JSON.stringify({
+        error: "http_error",
+        status: response.status,
+        message: errorMessage
+      }) + '\n');
+      process.stdout.flush?.();
+      
     } else {
       console.error('Message sent successfully');
+      
+      // Forward the response back to stdout for Roo
+      try {
+        const responseData = await response.text();
+        console.error(`Got response: ${responseData.substring(0, 100)}${responseData.length > 100 ? '...' : ''}`);
+        process.stdout.write(responseData + '\n');
+        process.stdout.flush?.();
+      } catch (e) {
+        console.error(`Error reading response: ${e.message}`);
+        process.stdout.write(JSON.stringify({
+          error: "response_error",
+          message: e.message
+        }) + '\n');
+        process.stdout.flush?.();
+      }
     }
   } catch (error) {
     console.error(`Error sending message: ${error.message}`);
-    if (error.code === 'ECONNREFUSED') {
-      console.error('Connection refused. Make sure the server is running and accessible');
+    
+    let errorType = "request_error";
+    let errorMessage = error.message;
+    
+    if (error.name === 'AbortError') {
+      errorType = "timeout";
+      errorMessage = "Request timed out after 10 seconds";
+    } else if (error.code === 'ECONNREFUSED') {
+      errorType = "connection_refused";
+      errorMessage = "Connection refused. Make sure the server is running and accessible";
     }
+    
+    console.error(errorMessage);
+    
+    // Send a formatted error response back to Roo
+    process.stdout.write(JSON.stringify({
+      error: errorType,
+      message: errorMessage
+    }) + '\n');
+    process.stdout.flush?.();
   }
 });
 
