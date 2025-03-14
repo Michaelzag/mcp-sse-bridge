@@ -36,135 +36,181 @@ try {
 const sseUrl = `${serverUrl}/sse`;
 const postUrl = `${serverUrl}/messages/`;
 
-// Set up SSE connection
-console.error(`Connecting to SSE endpoint: ${sseUrl}`);
-const es = new EventSource(sseUrl);
+// Variables to track connection state
+let es; // EventSource instance
 let sessionId = null;
 let connectTime = Date.now();
 let isConnected = false;
+let lastMessageTime = Date.now();
+let heartbeatCount = 0;
 
-// Connection opened handler
-es.onopen = () => {
-  isConnected = true;
-  console.error(`SSE connection established (took ${Date.now() - connectTime}ms)`);
-};
+// Function to set up all event listeners on the EventSource
+function setupEventListeners(eventSource) {
+  // Connection opened handler
+  eventSource.onopen = () => {
+    isConnected = true;
+    console.error(`SSE connection established (took ${Date.now() - connectTime}ms)`);
+  };
 
-// Forward messages to stdout
-es.onmessage = (event) => {
-  try {
-    // Update last message time to track server activity
+  // Forward messages to stdout
+  eventSource.onmessage = (event) => {
+    try {
+      // Update last message time to track server activity
+      updateLastMessageTime();
+      
+      // Log received messages when debugging
+      console.error(`Received message: ${event.data.substring(0, 100)}${event.data.length > 100 ? '...' : ''}`);
+      process.stdout.write(event.data + '\n');
+      // Make sure data is flushed
+      process.stdout.flush?.();
+    } catch (error) {
+      console.error(`Error processing message: ${error.message}`);
+    }
+  };
+
+  // Handle any other event types the server might send
+  eventSource.addEventListener('message', (event) => {
     updateLastMessageTime();
-    
-    // Log received messages when debugging
-    console.error(`Received message: ${event.data.substring(0, 100)}${event.data.length > 100 ? '...' : ''}`);
+    console.error(`Named message event received: ${event.data.substring(0, 100)}`);
     process.stdout.write(event.data + '\n');
-    // Make sure data is flushed
-    process.stdout.flush?.();
-  } catch (error) {
-    console.error(`Error processing message: ${error.message}`);
-  }
-};
-
-// Handle any other event types the server might send
-es.addEventListener('message', (event) => {
-  updateLastMessageTime();
-  console.error(`Named message event received: ${event.data.substring(0, 100)}`);
-  process.stdout.write(event.data + '\n');
-  process.stdout.flush?.();
-});
-
-// Listen for other common event types
-['ready', 'update', 'notification', 'error', 'ping'].forEach(eventName => {
-  es.addEventListener(eventName, (event) => {
-    updateLastMessageTime();
-    console.error(`${eventName} event received`);
-    process.stdout.write(JSON.stringify({
-      event: eventName,
-      data: event.data
-    }) + '\n');
     process.stdout.flush?.();
   });
-});
 
-// Handle the endpoint event to get the session ID
-es.addEventListener('endpoint', (event) => {
-  // Debug information
-  console.error(`Endpoint event received. Data type: ${typeof event.data}`);
-  console.error(`Data content: ${event.data}`);
-  
-  try {
-    // Multiple strategies to extract the session ID
+  // Listen for other common event types
+  ['ready', 'update', 'notification', 'error', 'ping'].forEach(eventName => {
+    eventSource.addEventListener(eventName, (event) => {
+      updateLastMessageTime();
+      console.error(`${eventName} event received`);
+      process.stdout.write(JSON.stringify({
+        event: eventName,
+        data: event.data
+      }) + '\n');
+      process.stdout.flush?.();
+    });
+  });
+
+  // Handle the endpoint event to get the session ID
+  eventSource.addEventListener('endpoint', (event) => {
+    // Debug information
+    console.error(`Endpoint event received. Data type: ${typeof event.data}`);
+    console.error(`Data content: ${event.data}`);
     
-    // Strategy 1: Try parsing as JSON if it's a string
-    let parsedData = event.data;
-    if (typeof event.data === 'string') {
-      try {
-        parsedData = JSON.parse(event.data);
-        console.error('Successfully parsed data as JSON');
-      } catch (e) {
-        // Not JSON, continue with raw string
-        console.error('Data is not JSON, using as raw string');
-      }
-    }
-    
-    // Strategy 2: Check if data is an object with session_id
-    if (typeof parsedData === 'object' && parsedData !== null) {
-      if (parsedData.session_id) {
-        sessionId = parsedData.session_id;
-        console.error(`Found session ID directly in object: ${sessionId}`);
-        return;
-      }
+    try {
+      // Multiple strategies to extract the session ID
       
-      // Try other common properties that might contain the URL
-      if (parsedData.url || parsedData.endpoint || parsedData.uri) {
-        const urlString = parsedData.url || parsedData.endpoint || parsedData.uri;
-        console.error(`Found URL in object: ${urlString}`);
+      // Strategy 1: Try parsing as JSON if it's a string
+      let parsedData = event.data;
+      if (typeof event.data === 'string') {
         try {
-          const url = new URL(urlString);
-          sessionId = url.searchParams.get('session_id');
-          if (sessionId) {
-            console.error(`Extracted session ID from URL params: ${sessionId}`);
-            return;
-          }
+          parsedData = JSON.parse(event.data);
+          console.error('Successfully parsed data as JSON');
         } catch (e) {
-          console.error(`Failed to parse URL from object: ${e.message}`);
+          // Not JSON, continue with raw string
+          console.error('Data is not JSON, using as raw string');
         }
       }
-    }
-    
-    // Strategy 3: Try direct URL parsing (original approach)
-    try {
-      const endpointUrl = event.data;
-      const url = new URL(endpointUrl);
-      sessionId = url.searchParams.get('session_id');
-      if (sessionId) {
-        console.error(`Extracted session ID from direct URL: ${sessionId}`);
-        return;
+      
+      // Strategy 2: Check if data is an object with session_id
+      if (typeof parsedData === 'object' && parsedData !== null) {
+        if (parsedData.session_id) {
+          sessionId = parsedData.session_id;
+          console.error(`Found session ID directly in object: ${sessionId}`);
+          return;
+        }
+        
+        // Try other common properties that might contain the URL
+        if (parsedData.url || parsedData.endpoint || parsedData.uri) {
+          const urlString = parsedData.url || parsedData.endpoint || parsedData.uri;
+          console.error(`Found URL in object: ${urlString}`);
+          try {
+            const url = new URL(urlString);
+            sessionId = url.searchParams.get('session_id');
+            if (sessionId) {
+              console.error(`Extracted session ID from URL params: ${sessionId}`);
+              return;
+            }
+          } catch (e) {
+            console.error(`Failed to parse URL from object: ${e.message}`);
+          }
+        }
       }
-    } catch (e) {
-      console.error(`Failed direct URL parsing: ${e.message}`);
-    }
-    
-    // Strategy 4: Look for session_id in the URL path
-    if (typeof event.data === 'string' && event.data.includes('session_id')) {
-      const match = event.data.match(/session_id=([^&]+)/);
-      if (match && match[1]) {
-        sessionId = match[1];
-        console.error(`Extracted session ID from URL string pattern: ${sessionId}`);
-        return;
+      
+      // Strategy 3: Try direct URL parsing (original approach)
+      try {
+        const endpointUrl = event.data;
+        const url = new URL(endpointUrl);
+        sessionId = url.searchParams.get('session_id');
+        if (sessionId) {
+          console.error(`Extracted session ID from direct URL: ${sessionId}`);
+          return;
+        }
+      } catch (e) {
+        console.error(`Failed direct URL parsing: ${e.message}`);
       }
+      
+      // Strategy 4: Look for session_id in the URL path
+      if (typeof event.data === 'string' && event.data.includes('session_id')) {
+        const match = event.data.match(/session_id=([^&]+)/);
+        if (match && match[1]) {
+          sessionId = match[1];
+          console.error(`Extracted session ID from URL string pattern: ${sessionId}`);
+          return;
+        }
+      }
+      
+      // If we got here, we failed to extract the session ID
+      console.error('Failed to extract session ID using all strategies');
+      console.error('Will continue running but bridge may not function correctly');
+      
+    } catch (error) {
+      console.error(`Error in endpoint event handler: ${error.message}`);
+      console.error(`Event data was: ${typeof event.data}:`, event.data);
+      // Don't exit on error, just log it and continue
+    }
+  });
+  
+  // Handle SSE connection errors
+  eventSource.onerror = (error) => {
+    isConnected = false;
+    console.error(`SSE connection error:`, error);
+    
+    // Notify about connection loss
+    process.stdout.write(JSON.stringify({
+      error: "connection_error",
+      message: "SSE connection error. The server may be unavailable or the connection was lost."
+    }) + '\n');
+    process.stdout.flush?.();
+    
+    // Log state information for debugging
+    if (sessionId) {
+      console.error(`Lost connection for session: ${sessionId}`);
+      console.error(`Will attempt to reconnect automatically`);
+      // Don't clear sessionId until we get a new one, in case we need to retry sending messages
+      // The server will create a new session anyway when reconnected
     }
     
-    // If we got here, we failed to extract the session ID
-    console.error('Failed to extract session ID using all strategies');
-    console.error('Will continue running but bridge may not function correctly');
-    
-  } catch (error) {
-    console.error(`Error in endpoint event handler: ${error.message}`);
-    console.error(`Event data was: ${typeof event.data}:`, event.data);
-    // Don't exit on error, just log it and continue
-  }
-});
+    // If error persists for a while, provide more helpful debugging information
+    if (!sessionId && (Date.now() - connectTime > 10000)) {
+      console.error('\nConnection troubleshooting suggestions:');
+      console.error('1. Verify the server URL is correct');
+      console.error('2. Check that the server is running and accessible');
+      console.error('3. Ensure the server supports SSE connections at the /sse endpoint');
+      console.error('4. Check if the server is using a different port (8077 instead of 8577)');
+      console.error('5. Try accessing the SSE endpoint directly in a browser\n');
+    }
+  };
+}
+
+// Initialize the SSE connection
+function initializeConnection() {
+  console.error(`Connecting to SSE endpoint: ${sseUrl}`);
+  es = new EventSource(sseUrl);
+  connectTime = Date.now();
+  setupEventListeners(es);
+}
+
+// Set up initial SSE connection
+initializeConnection();
 
 // Forward stdin to HTTP POST
 process.stdin.on('data', async (data) => {
@@ -269,38 +315,11 @@ process.stdin.on('data', async (data) => {
   }
 });
 
-// Handle SSE connection errors
-es.onerror = (error) => {
-  isConnected = false;
-  console.error(`SSE connection error:`, error);
-  
-  // Notify about connection loss
-  process.stdout.write(JSON.stringify({
-    error: "connection_error",
-    message: "SSE connection error. The server may be unavailable or the connection was lost."
-  }) + '\n');
-  process.stdout.flush?.();
-  
-  // Log state information for debugging
-  if (sessionId) {
-    console.error(`Lost connection for session: ${sessionId}`);
-    // Don't clear sessionId since we may receive more messages before reconnection completes
-  }
-  
-  // If error persists for a while, provide more helpful debugging information
-  if (!sessionId && (Date.now() - connectTime > 10000)) {
-    console.error('\nConnection troubleshooting suggestions:');
-    console.error('1. Verify the server URL is correct');
-    console.error('2. Check that the server is running and accessible');
-    console.error('3. Ensure the server supports SSE connections at the /sse endpoint');
-    console.error('4. Check if the server is using a different port (8077 instead of 8577)');
-    console.error('5. Try accessing the SSE endpoint directly in a browser\n');
-  }
-};
-
 // Add a heartbeat mechanism to diagnose communication issues
-let lastMessageTime = Date.now();
-let heartbeatCount = 0;
+function updateLastMessageTime() {
+  lastMessageTime = Date.now();
+  heartbeatCount = 0; // Reset heartbeat count when we get any message
+}
 
 // Set up a timer to check connection status and send heartbeats
 const statusTimer = setInterval(() => {
@@ -317,16 +336,14 @@ const statusTimer = setInterval(() => {
       console.error(`Sending heartbeat #${heartbeatCount} after ${Math.round(idleTime/1000)}s of silence...`);
       
       try {
-        // Create a dummy heartbeat message that follows MCP JSON-RPC protocol format
+        // Create a heartbeat message using the dedicated ping tool
+        // This assumes the MCP server has a 'ping' tool, which we added to zagmems MCP server
         const heartbeatMessage = JSON.stringify({
           jsonrpc: "2.0",
           method: "tools/call",
           params: {
-            name: "search_memories",
-            arguments: {
-              query: "ping",
-              limit: 1
-            }
+            name: "ping",
+            arguments: {}
           },
           id: `heartbeat-${heartbeatCount}`
         });
@@ -336,27 +353,43 @@ const statusTimer = setInterval(() => {
         
         // Update last message time to avoid sending too many heartbeats
         lastMessageTime = Date.now();
+        
+        // If we get this far, mark the connection as active
+        isConnected = true;
       } catch (e) {
         console.error(`Error sending heartbeat: ${e.message}`);
       }
       
-      // If we've sent 5 heartbeats with no response, there's likely an issue
-      if (heartbeatCount >= 5) {
+      // If we've sent 3 heartbeats with no response, there's likely an issue
+      if (heartbeatCount >= 3 && Date.now() - lastMessageTime > 90000) {
         console.error('\n-------------------------------------------------------------');
         console.error('WARNING: Server appears unresponsive after multiple heartbeats');
         console.error('This may indicate a server issue rather than a bridge problem');
         console.error('Consider checking server logs or restarting the server');
+        console.error('Will try to force reconnection...');
         console.error('-------------------------------------------------------------\n');
+        
+        // Force reconnection by closing and reopening the connection
+        try {
+          if (es) {
+            es.close();
+          }
+          
+          // Short delay before reconnecting
+          setTimeout(() => {
+            console.error(`Reconnecting to SSE endpoint: ${sseUrl}`);
+            initializeConnection();
+          }, 1000);
+        } catch (reconnectError) {
+          console.error(`Error during forced reconnection: ${reconnectError.message}`);
+        }
+        
+        // Reset heartbeat count to avoid continuous reconnection attempts
+        heartbeatCount = 0;
       }
     }
   }
 }, 5000);
-
-// Update lastMessageTime whenever we receive any message
-const updateLastMessageTime = () => {
-  lastMessageTime = Date.now();
-  heartbeatCount = 0; // Reset heartbeat count when we get any message
-};
 
 // Clear the timer on exit
 process.on('exit', () => {
@@ -365,16 +398,22 @@ process.on('exit', () => {
 
 // Handle process exit
 process.on('exit', () => {
-  es.close();
+  if (es) {
+    es.close();
+  }
 });
 
 // Handle process termination signals
 process.on('SIGINT', () => {
-  es.close();
+  if (es) {
+    es.close();
+  }
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
-  es.close();
+  if (es) {
+    es.close();
+  }
   process.exit(0);
 });
