@@ -52,6 +52,9 @@ es.onopen = () => {
 // Forward messages to stdout
 es.onmessage = (event) => {
   try {
+    // Update last message time to track server activity
+    updateLastMessageTime();
+    
     // Log received messages when debugging
     console.error(`Received message: ${event.data.substring(0, 100)}${event.data.length > 100 ? '...' : ''}`);
     process.stdout.write(event.data + '\n');
@@ -64,6 +67,7 @@ es.onmessage = (event) => {
 
 // Handle any other event types the server might send
 es.addEventListener('message', (event) => {
+  updateLastMessageTime();
   console.error(`Named message event received: ${event.data.substring(0, 100)}`);
   process.stdout.write(event.data + '\n');
   process.stdout.flush?.();
@@ -72,6 +76,7 @@ es.addEventListener('message', (event) => {
 // Listen for other common event types
 ['ready', 'update', 'notification', 'error', 'ping'].forEach(eventName => {
   es.addEventListener(eventName, (event) => {
+    updateLastMessageTime();
     console.error(`${eventName} event received`);
     process.stdout.write(JSON.stringify({
       event: eventName,
@@ -280,14 +285,65 @@ es.onerror = (error) => {
   }
 };
 
-// Set up a timer to check connection status
+// Add a heartbeat mechanism to diagnose communication issues
+let lastMessageTime = Date.now();
+let heartbeatCount = 0;
+
+// Set up a timer to check connection status and send heartbeats
 const statusTimer = setInterval(() => {
   if (!isConnected) {
     console.error(`Still trying to connect to ${sseUrl}...`);
   } else if (!sessionId) {
     console.error('Connected but waiting for session ID...');
+  } else {
+    // If we have a session ID but no messages for 30 seconds, try sending a heartbeat
+    const idleTime = Date.now() - lastMessageTime;
+    if (idleTime > 30000) { // 30 seconds
+      // Send a ping message to check if the server is responding
+      heartbeatCount++;
+      console.error(`Sending heartbeat #${heartbeatCount} after ${Math.round(idleTime/1000)}s of silence...`);
+      
+      try {
+        // Create a dummy heartbeat message that follows MCP JSON-RPC protocol format
+        const heartbeatMessage = JSON.stringify({
+          jsonrpc: "2.0",
+          method: "tools/call",
+          params: {
+            name: "search_memories",
+            arguments: {
+              query: "ping",
+              limit: 1
+            }
+          },
+          id: `heartbeat-${heartbeatCount}`
+        });
+        
+        // Send it directly to stdin handler to use existing error handling
+        process.stdin.emit('data', Buffer.from(heartbeatMessage));
+        
+        // Update last message time to avoid sending too many heartbeats
+        lastMessageTime = Date.now();
+      } catch (e) {
+        console.error(`Error sending heartbeat: ${e.message}`);
+      }
+      
+      // If we've sent 5 heartbeats with no response, there's likely an issue
+      if (heartbeatCount >= 5) {
+        console.error('\n-------------------------------------------------------------');
+        console.error('WARNING: Server appears unresponsive after multiple heartbeats');
+        console.error('This may indicate a server issue rather than a bridge problem');
+        console.error('Consider checking server logs or restarting the server');
+        console.error('-------------------------------------------------------------\n');
+      }
+    }
   }
 }, 5000);
+
+// Update lastMessageTime whenever we receive any message
+const updateLastMessageTime = () => {
+  lastMessageTime = Date.now();
+  heartbeatCount = 0; // Reset heartbeat count when we get any message
+};
 
 // Clear the timer on exit
 process.on('exit', () => {
