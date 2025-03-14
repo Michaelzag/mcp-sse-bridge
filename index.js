@@ -10,7 +10,7 @@
  */
 
 const fetch = require('node-fetch');
-const { EventSource } = require('eventsource');
+const EventSource = require('eventsource');
 
 // Get server URL from command-line arguments
 const serverUrl = process.argv[2];
