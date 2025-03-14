@@ -1,0 +1,16 @@
+{
+  "name": "mcp-sse-bridge",
+  "version": "1.0.0",
+  "description": "Simple bridge between Roo-Code stdio and SSE-based MCP servers",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "eventsource": "^2.0.2",
+    "node-fetch": "^2.6.9"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
