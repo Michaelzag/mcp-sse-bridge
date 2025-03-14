@@ -274,6 +274,19 @@ es.onerror = (error) => {
   isConnected = false;
   console.error(`SSE connection error:`, error);
   
+  // Notify about connection loss
+  process.stdout.write(JSON.stringify({
+    error: "connection_error",
+    message: "SSE connection error. The server may be unavailable or the connection was lost."
+  }) + '\n');
+  process.stdout.flush?.();
+  
+  // Log state information for debugging
+  if (sessionId) {
+    console.error(`Lost connection for session: ${sessionId}`);
+    // Don't clear sessionId since we may receive more messages before reconnection completes
+  }
+  
   // If error persists for a while, provide more helpful debugging information
   if (!sessionId && (Date.now() - connectTime > 10000)) {
     console.error('\nConnection troubleshooting suggestions:');
